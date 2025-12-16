@@ -1,4 +1,3 @@
-/* deadlock1.c - AB-BA deadlock */
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
