@@ -64,3 +64,12 @@ In the graph, we connect threads using this logic (simplified): if T1 is waiting
 Our monitor function runs tests every 100 ms, builds the graph, checks for cycles with DFS, and then tracks the cycle so we can output it. Of course, the time period at which our monitor runs is customizable as well.
 
 In the process, we print which thread has which mutex, these simple logs, and in the end, if a cycle is detected, we output which threads are involved. You can remove additional comments if you want to leave only the final one.
+
+# Technical Requirements
+
+latform Support
+Linux Only: Uses LD_PRELOAD, ELF-specific headers (<execinfo.h>), and the /proc filesystem. Not compatible with macOS (Mach-O) or Windows (PE).
+
+Stack Tracing
+Depth Limit: Captures a maximum of 10 stack frames. This provides a balance between deep debugging context and low runtime memory overhead.
+Symbol Resolution: Uses the addr2line utility to map addresses to source code.

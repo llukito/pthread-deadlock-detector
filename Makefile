@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -fPIC -O2 -g
-LDFLAGS = -shared -ldl -pthread
+LDFLAGS = -shared -ldl -pthread -rdynamic
 
 LIBSRC = intercept.c tracker.c graph.c
 TARGET = libdeadlock.so

@@ -7,6 +7,7 @@
 #include <string.h>
 #include "tracker.h"
 #include "graph.h"
+#include <execinfo.h>
 
 /* --- Real function pointers --- */
 typedef int (*real_lock_t)(pthread_mutex_t *);
@@ -68,6 +69,31 @@ static void *monitor_func(void *arg) {
                 } else {
                     safe_write(2, "\n", 1);
                 }
+            }
+            
+            // print the exact line locations for each thread in the cycle
+            safe_write(2, "\nWait-for Locations (Stack Traces):\n", 36);
+            for (size_t i = 0; i < cycle_len; ++i) {
+                spinlock_acq(&tracker.lock);
+                thread_info_t *th = NULL;
+                // find this thread's recorded stack in the tracker
+                for(size_t j=0; j < tracker.thread_count; j++) {
+                    if(tracker.threads[j].tid == cycle[i]) {
+                        th = &tracker.threads[j];
+                        break;
+                    }
+                }
+
+                if (th && th->frames > 0) {
+                    char head[64];
+                    int n = snprintf(head, sizeof(head), "--- Thread T%lu waiting at: ---\n", (unsigned long)th->tid);
+                    safe_write(2, head, n);
+                    
+                    // this translates raw addresses to text and prints to stderr
+                    backtrace_symbols_fd(th->callstack, th->frames, 2);
+                    safe_write(2, "\n", 1);
+                }
+                spinlock_rel(&tracker.lock);
             }
 
             // additionally print tracker state for waiting mutex info

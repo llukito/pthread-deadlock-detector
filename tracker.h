@@ -16,6 +16,8 @@ typedef struct {
 typedef struct {
     pthread_t tid;           // ket
     pthread_mutex_t *waiting; // NULL if not waiting
+    void *callstack[10];      // Storage for stack frames
+    int frames;               // Number of frames captured
 } thread_info_t;
 
 typedef struct {
@@ -46,5 +48,8 @@ void tracker_print_state(simple_tracker_t *t);
  */
 struct wait_for_graph_t;
 void tracker_build_wait_for_graph(simple_tracker_t *t, struct wait_for_graph_t *graph);
+
+void spinlock_acq(atomic_flag *f);
+void spinlock_rel(atomic_flag *f);
 
 #endif

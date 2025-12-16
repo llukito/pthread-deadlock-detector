@@ -5,18 +5,20 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <execinfo.h>
 
 static inline void safe_write(int fd, const void *buf, size_t n) {
     ssize_t _r = write(fd, buf, n);
     (void)_r;
 }
 
-static inline void spinlock_acq(atomic_flag *f) {
+void spinlock_acq(atomic_flag *f) {
     while (atomic_flag_test_and_set_explicit(f, memory_order_acquire)) {
         // busy-wait
     }
 }
-static inline void spinlock_rel(atomic_flag *f) {
+
+void spinlock_rel(atomic_flag *f) {
     atomic_flag_clear_explicit(f, memory_order_release);
 }
 
@@ -94,10 +96,16 @@ void tracker_lock_released(simple_tracker_t *t, pthread_t tid, pthread_mutex_t *
 // Called when tid is blocked waiting for m 
 void tracker_waiting(simple_tracker_t *t, pthread_t tid, pthread_mutex_t *m) {
     spinlock_acq(&t->lock);
-
-    thread_info_t *th = get_or_create_thread_entry(t, tid);
-    if (th) th->waiting = m;
-
+    thread_info_t *info = get_or_create_thread_entry(t, tid);
+    if (info) {
+        info->waiting = m;
+        if (m != NULL) {
+            // Capture the stack trace at the moment of waiting
+            info->frames = backtrace(info->callstack, 10);
+        } else {
+            info->frames = 0;
+        }
+    }
     spinlock_rel(&t->lock);
 }
 
