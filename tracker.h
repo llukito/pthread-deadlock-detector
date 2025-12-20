@@ -5,6 +5,8 @@
 #include <stdatomic.h>
 #include <stddef.h>
 
+// you can increase these numbers it you are planning to run a big project,
+// but remember that you have to then change O(n) access into O(1) with hashmap
 #define MAX_MUTEXES 256
 #define MAX_THREADS 256
 
@@ -14,9 +16,9 @@ typedef struct {
 } mutex_info_t;
 
 typedef struct {
-    pthread_t tid;           // ket
+    pthread_t tid;            // key
     pthread_mutex_t *waiting; // NULL if not waiting
-    void *callstack[10];      // Storage for stack frames
+    void *callstack[10];      // Storage for stack frames (customizible)
     int frames;               // Number of frames captured
 } thread_info_t;
 

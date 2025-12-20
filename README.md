@@ -40,11 +40,11 @@ The library intercepts `pthread_mutex_lock`, `pthread_mutex_unlock` and `pthread
 
 LD_PRELOAD basically puts my library first before the program runs, so we set up the API first before these well-known libraries (such as `pthread.h`).
 
-Once the library is linked, functions with `__attribute__((constructor))` at the head get executed first. That's where we track and remember real functions (`pthread_mutex_lock` and `pthread_mutex_unlock`).
+Once the library is linked, functions with `__attribute__((constructor))` at the head get executed first. That's where we track and remember real functions (`pthread_mutex_lock`, `pthread_mutex_unlock` and `pthread_mutex_trylock`).
 
 We also initialize our thread, which is a special one and is not tracked, because we use it for parallel monitoring execution. That's why, in the future, we won't use `pthread_mutex_lock` and `pthread_mutex_unlock` but another one, which is `atomic_flag`. Notice that we also use attributes for that pthread: we use a detached type and not joinable, because there is no other thread that will be waiting for it, so it cleans up automatically.
 
-Then we define functions that already exist in `pthread.h`, but because we linked our library first, the program sets this library in the first container and `pthread.h` in the following one. So once a function tries to search for the implementation of these two functions, it will come across ours first, which will run additional code before calling the actual functions. This additional code is what remembers information about threads and mutexes. Notice that we have both `pthread_mutex_lock` and `__pthread_mutex_lock`, and the same for unlock, because sometimes what is really called is the one with `__`. This is done by glibc for optimization, so sometimes the real one is called, sometimes the `__` version, so we have both ready in case either of them is called.
+Then we define functions that already exist in `pthread.h`, but because we linked our library first, the program sets this library in the first container and `pthread.h` in the following one. So once a function tries to search for the implementation of these two functions, it will come across ours first, which will run additional code before calling the actual functions. This additional code is what remembers information about threads and mutexes. Notice that we have both `pthread_mutex_lock` and `__pthread_mutex_lock`, and the same for unlock and trylock, because sometimes what is really called is the one with `__`. This is done by glibc for optimization, so sometimes the real one is called, sometimes the `__` version, so we have both ready in case either of them is called.
 
 We also have `in_hook` to make sure another thread does not access our functions while another one is inside them. In that case, we just call the main lock and do not let it go further. But in general, we remember which thread is waiting for which mutex and which thread acquires which mutex, and oppositely in unlock, where we track which pthread unlocked a mutex.
 
@@ -67,9 +67,13 @@ In the process, we print which thread has which mutex, these simple logs, and in
 
 # Technical Requirements
 
-latform Support
+## Platform Support
 Linux Only: Uses LD_PRELOAD, ELF-specific headers (<execinfo.h>), and the /proc filesystem. Not compatible with macOS (Mach-O) or Windows (PE).
 
-Stack Tracing
-Depth Limit: Captures a maximum of 10 stack frames. This provides a balance between deep debugging context and low runtime memory overhead.
+## Stack Tracing
+Depth Limit: 
+To search where exactly that deadlock happened and where are these
+threads stored, we have to access stack frames stored in RAM. We
+capture a maximum of 10 stack frames (this provides a balance between deep debugging context and low runtime memory overhead), which is quite descent, cause many programs don't require more, but again if you want to make it scalable, increase its size. 
+
 Symbol Resolution: Uses the addr2line utility to map addresses to source code.

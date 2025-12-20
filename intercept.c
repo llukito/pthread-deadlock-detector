@@ -24,6 +24,7 @@ static simple_tracker_t tracker;
 /* --- Thread-local guards --- */
 static __thread int in_hook = 0;                 // prevents recursion in hooks
 static __thread int in_deadlock_detection = 0;  // prevents start of detection while already being done
+static __thread int initializing = 0;
 
 /* --- Monitor control --- */
 static volatile int monitor_running = 1;
@@ -37,10 +38,12 @@ static inline void safe_write(int fd, const void *buf, size_t n) {
 
 // we monitor with this function
 static void *monitor_func(void *arg) {
-    (void)arg;
+    (void)arg; // again avoids warnings
+
+    in_hook = 1;
 
     while (monitor_running) {
-        // sleep 100ms between checks
+        // sleep 100ms between checks ( can be customizied )
         usleep(100 * 1000);
 
         if (deadlock_reported) continue;
@@ -72,33 +75,48 @@ static void *monitor_func(void *arg) {
             }
             
             // print the exact line locations for each thread in the cycle
-            safe_write(2, "\nWait-for Locations (Stack Traces):\n", 36);
+            safe_write(STDERR_FILENO, "\n!!! DEADLOCK DETECTED !!!\nCycle: ", 31);
+            for (size_t i = 0; i < cycle_len; i++) {
+                char buf[64];
+                int len = snprintf(buf, sizeof(buf), "%lu", (unsigned long)cycle[i]);
+                safe_write(STDERR_FILENO, buf, len);
+                if (i < cycle_len - 1) safe_write(STDERR_FILENO, " -> ", 4);
+            }
+            safe_write(STDERR_FILENO, "\n", 1);
+            
+            // safe stack printing (Release lock before I/O)
+            safe_write(STDERR_FILENO, "\nWait-for Locations:\n", 21);
             for (size_t i = 0; i < cycle_len; ++i) {
+                void *temp_stack[10];
+                int frames = 0;
+                pthread_t tid = cycle[i];
+
+                // copy data under lock
                 spinlock_acq(&tracker.lock);
-                thread_info_t *th = NULL;
-                // find this thread's recorded stack in the tracker
-                for(size_t j=0; j < tracker.thread_count; j++) {
-                    if(tracker.threads[j].tid == cycle[i]) {
-                        th = &tracker.threads[j];
+                for(size_t j=0; j<tracker.thread_count; j++){
+                    if(tracker.threads[j].tid == tid){
+                        frames = tracker.threads[j].frames;
+                        if(frames > 0) memcpy(temp_stack, tracker.threads[j].callstack, sizeof(void*)*frames);
                         break;
                     }
                 }
-
-                if (th && th->frames > 0) {
-                    char head[64];
-                    int n = snprintf(head, sizeof(head), "--- Thread T%lu waiting at: ---\n", (unsigned long)th->tid);
-                    safe_write(2, head, n);
-                    
-                    // this translates raw addresses to text and prints to stderr
-                    backtrace_symbols_fd(th->callstack, th->frames, 2);
-                    safe_write(2, "\n", 1);
-                }
                 spinlock_rel(&tracker.lock);
+
+                // print outside lock
+                if (frames > 0) {
+                    char h[64];
+                    int l = snprintf(h, sizeof(h), "Thread %lu stack:\n", (unsigned long)tid);
+                    safe_write(STDERR_FILENO, h, l);
+                    backtrace_symbols_fd(temp_stack, frames, STDERR_FILENO);
+                    safe_write(STDERR_FILENO, "\n", 1);
+                }
             }
 
             // additionally print tracker state for waiting mutex info
             safe_write(2, "Involved waits (tid -> waiting_mutex):\n", 39);
             tracker_print_state(&tracker);
+
+            _exit(1);
         }
 
         in_deadlock_detection = 0;
@@ -111,6 +129,9 @@ static void *monitor_func(void *arg) {
 // Constructor: initialize tracker, resolve functions, and start monitor
 __attribute__((constructor))
 static void deadlock_init(void) {
+    if (in_hook) return;
+    in_hook = 1;
+
     safe_write(2, "Deadlock runtime loaded\n", 24);
 
     tracker_init(&tracker);
@@ -119,8 +140,10 @@ static void deadlock_init(void) {
         (real_lock_t)dlsym(RTLD_NEXT, "pthread_mutex_lock");
     real_pthread_mutex_unlock =
         (real_unlock_t)dlsym(RTLD_NEXT, "pthread_mutex_unlock");
+    real_pthread_mutex_trylock =
+        (real_trylock_t)dlsym(RTLD_NEXT, "pthread_mutex_trylock");
 
-    if (!real_pthread_mutex_lock || !real_pthread_mutex_unlock) {
+    if (!real_pthread_mutex_lock || !real_pthread_mutex_unlock || !real_pthread_mutex_trylock) {
         safe_write(2, "ERROR: dlsym failed\n", 20);
     }
 
@@ -133,6 +156,8 @@ static void deadlock_init(void) {
         safe_write(2, "WARNING: couldn't create monitor thread\n", 39);
     }
     pthread_attr_destroy(&attr);
+
+    in_hook = 0;
 }
 
 // Destructor: stop monitor and print final tracker state
@@ -146,14 +171,19 @@ static void deadlock_fini(void) {
 }
 
 /* --- Lock interception --- */
+
 int pthread_mutex_lock(pthread_mutex_t *mutex) {
     // lazy initialization if pointer is missing
     if (!real_pthread_mutex_lock) {
+        if (initializing) return 0;
+        initializing = 1;
         real_lock_t temp = (real_lock_t)dlsym(RTLD_NEXT, "pthread_mutex_lock");
         if (!temp) {
+            initializing = 0;
             return 0; 
         }
         real_pthread_mutex_lock = temp;
+        initializing = 0;
     }
 
     if (in_hook) return real_pthread_mutex_lock(mutex);
@@ -177,11 +207,18 @@ int __pthread_mutex_lock(pthread_mutex_t *mutex) {
 }
 
 /* --- Unlock interception --- */
+
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
     if (!real_pthread_mutex_unlock) {
+        if (initializing) return 0;
+        initializing = 1;
         real_unlock_t temp = (real_unlock_t)dlsym(RTLD_NEXT, "pthread_mutex_unlock");
-        if (!temp) return 0; 
+        if (!temp) {
+            initializing = 0;
+            return 0; 
+        }
         real_pthread_mutex_unlock = temp;
+        initializing = 0;
     }
 
     if (in_hook) return real_pthread_mutex_unlock(mutex);
@@ -205,9 +242,15 @@ int __pthread_mutex_unlock(pthread_mutex_t *mutex) {
 int pthread_mutex_trylock(pthread_mutex_t *mutex) {
     // safe Lazy Initialization
     if (!real_pthread_mutex_trylock) {
+        if (initializing) return 0;
+        initializing = 1;
         real_trylock_t temp = (real_trylock_t)dlsym(RTLD_NEXT, "pthread_mutex_trylock");
-        if (!temp) return 0; 
+        if (!temp) {
+            initializing = 0;
+            return 0; 
+        }
         real_pthread_mutex_trylock = temp;
+        initializing = 0;
     }
 
     if (in_hook) return real_pthread_mutex_trylock(mutex);

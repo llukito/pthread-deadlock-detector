@@ -95,17 +95,38 @@ void tracker_lock_released(simple_tracker_t *t, pthread_t tid, pthread_mutex_t *
 
 // Called when tid is blocked waiting for m 
 void tracker_waiting(simple_tracker_t *t, pthread_t tid, pthread_mutex_t *m) {
+    void *temp_stack[10];
+    int frames = 0;
+    
+    if (m != NULL) {
+        frames = backtrace(temp_stack, 10);
+    }
+
     spinlock_acq(&t->lock);
-    thread_info_t *info = get_or_create_thread_entry(t, tid);
-    if (info) {
-        info->waiting = m;
-        if (m != NULL) {
-            // Capture the stack trace at the moment of waiting
-            info->frames = backtrace(info->callstack, 10);
-        } else {
-            info->frames = 0;
+
+    int already_owned = 0;
+    if (m != NULL) {
+        for (size_t i = 0; i < t->mutex_count; i++) {
+            if (t->mutexes[i].mutex == m && t->mutexes[i].owner == tid) {
+                already_owned = 1;
+                break;
+            }
         }
     }
+    
+    if (!already_owned) {
+        thread_info_t *info = get_or_create_thread_entry(t, tid);
+        if (info) {
+            info->waiting = m;
+            if (m != NULL) {
+                info->frames = frames;
+                memcpy(info->callstack, temp_stack, sizeof(void*) * frames);
+            } else {
+                info->frames = 0;
+            }
+        }
+    }
+    
     spinlock_rel(&t->lock);
 }
 
@@ -132,7 +153,7 @@ void tracker_print_state(simple_tracker_t *t) {
 }
 
 // Build wait-for graph snapshot from tracker data.
-// This function acquires the tracker spinlock internally to ensure a consistent snapshot
+// this function acquires the tracker spinlock internally to ensure a consistent snapshot
 void tracker_build_wait_for_graph(simple_tracker_t *t, struct wait_for_graph_t *graph) {
     // clear graph
     graph->node_count = 0;
