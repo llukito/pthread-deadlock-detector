@@ -34,9 +34,14 @@ The library intercepts `pthread_mutex_lock`, `pthread_mutex_unlock` and `pthread
 - To run the program, first use `make`,  
   and then run the command:
 
-      LD_PRELOAD=./libdeadlock.so ./test
-
+      LD_PRELOAD=./libdeadlock.so ./testn  (where n is a number from 1 to 6) 
+  
+  So, for example, to run first test you would run command,
+  
+      LD_PRELOAD=./libdeadlock.so ./test1
+    
   > Make sure to edit the file that you want to test for deadlock in the Makefile.
+  > You can add more tests but change Makefile, or edit existing test files.
 
 LD_PRELOAD basically puts my library first before the program runs, so we set up the API first before these well-known libraries (such as `pthread.h`).
 
