@@ -1,3 +1,4 @@
+// Deadlock should be detected
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
