@@ -80,5 +80,3 @@ Depth Limit:
 To search where exactly that deadlock happened and where are these
 threads stored, we have to access stack frames stored in RAM. We
 capture a maximum of 10 stack frames (this provides a balance between deep debugging context and low runtime memory overhead), which is quite descent, cause many programs don't require more, but again if you want to make it scalable, increase its size. 
-
-Symbol Resolution: Uses the addr2line utility to map addresses to source code.
