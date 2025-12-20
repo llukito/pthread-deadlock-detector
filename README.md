@@ -80,3 +80,7 @@ Depth Limit:
 To search where exactly that deadlock happened and where are these
 threads stored, we have to access stack frames stored in RAM. We
 capture a maximum of 10 stack frames (this provides a balance between deep debugging context and low runtime memory overhead), which is quite descent, cause many programs don't require more, but again if you want to make it scalable, increase its size. 
+
+# Output
+If deadlock happens, our program tells user about it, it also shows it cycle that was created by specific
+threads with their unique IDs. We show user which mutexes were owned by which threads and which threads were waiting for which mutexes, but what is important, is user to be able to fix the code. SO in the middle we actually show user on which line and in which file was program blocked, and we output that for each thread, so user can examine exactly that part of the code, and debugging becomes easier, so we don't only state the problem, we help our user in solving it out.
