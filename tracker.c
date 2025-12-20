@@ -103,30 +103,18 @@ void tracker_waiting(simple_tracker_t *t, pthread_t tid, pthread_mutex_t *m) {
     }
 
     spinlock_acq(&t->lock);
+    
+    thread_info_t *info = get_or_create_thread_entry(t, tid);
+    if (info) {
+        info->waiting = m;
+        if (m != NULL) {
+            info->frames = frames;
+            memcpy(info->callstack, temp_stack, sizeof(void*) * frames);
+        } else {
+            info->frames = 0;
+        }
+    }
 
-    int already_owned = 0;
-    if (m != NULL) {
-        for (size_t i = 0; i < t->mutex_count; i++) {
-            if (t->mutexes[i].mutex == m && t->mutexes[i].owner == tid) {
-                already_owned = 1;
-                break;
-            }
-        }
-    }
-    
-    if (!already_owned) {
-        thread_info_t *info = get_or_create_thread_entry(t, tid);
-        if (info) {
-            info->waiting = m;
-            if (m != NULL) {
-                info->frames = frames;
-                memcpy(info->callstack, temp_stack, sizeof(void*) * frames);
-            } else {
-                info->frames = 0;
-            }
-        }
-    }
-    
     spinlock_rel(&t->lock);
 }
 

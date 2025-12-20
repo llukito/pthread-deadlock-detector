@@ -8,6 +8,8 @@
 #include "tracker.h"
 #include "graph.h"
 #include <execinfo.h>
+#include <stdlib.h>
+#include <stdint.h>
 
 /* --- Real function pointers --- */
 typedef int (*real_lock_t)(pthread_mutex_t *);
@@ -36,6 +38,54 @@ static inline void safe_write(int fd, const void *buf, size_t n) {
     (void)_r; 
 }
 
+// we use this helper to resolve stack line with addr2line
+void print_resolved_frame(void *addr) {
+    // subtract 1 from the address to get the call site instead of return address
+    void *call_site = (void *)((uintptr_t)addr - 1);
+
+    // resolve the call_site instead of the raw addr
+    char **symbols = backtrace_symbols(&call_site, 1);
+    if (!symbols) return;
+
+    char *buf = strdup(symbols[0]);
+    char *bin_name = buf;
+    char *off_start = strchr(buf, '(');
+    char *off_end = off_start ? strchr(off_start, ')') : NULL;
+
+    if (off_start && off_end) {
+        *off_start = '\0'; 
+        off_start++;       
+        *off_end = '\0';   
+
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd), 
+                 "LD_PRELOAD= DEADLOCK_QUIET=1 addr2line -f -p -e %s %s 2>/dev/null", 
+                 bin_name, off_start);
+
+        FILE *fp = popen(cmd, "r");
+        if (fp) {
+            char line[512];
+            if (fgets(line, sizeof(line), fp) && line[0] != '?') {
+                line[strcspn(line, "\n")] = 0;
+                safe_write(2, "      -> ", 9);
+                safe_write(2, line, strlen(line));
+                safe_write(2, "\n", 1);
+            } else {
+                safe_write(2, "      (raw): ", 13);
+                safe_write(2, symbols[0], strlen(symbols[0]));
+                safe_write(2, "\n", 1);
+            }
+            pclose(fp);
+        }
+    } else {
+        safe_write(2, "      (raw): ", 13);
+        safe_write(2, symbols[0], strlen(symbols[0]));
+        safe_write(2, "\n", 1);
+    }
+    free(buf);
+    free(symbols);
+}
+
 // we monitor with this function
 static void *monitor_func(void *arg) {
     (void)arg; // again avoids warnings
@@ -61,7 +111,7 @@ static void *monitor_func(void *arg) {
         size_t cycle_len = 0;
         if (detect_deadlock_cycle(&graph, cycle, &cycle_len)) {
             deadlock_reported = 1;
-            safe_write(2, "Deadlock detected! Cycle:\n", 26);
+            safe_write(2, "!!! Deadlock detected !!!\n\nCycle: ", 34);
 
             char buf[256];
             for (size_t i = 0; i < cycle_len; ++i) {
@@ -74,18 +124,8 @@ static void *monitor_func(void *arg) {
                 }
             }
             
-            // print the exact line locations for each thread in the cycle
-            safe_write(STDERR_FILENO, "\n!!! DEADLOCK DETECTED !!!\nCycle: ", 31);
-            for (size_t i = 0; i < cycle_len; i++) {
-                char buf[64];
-                int len = snprintf(buf, sizeof(buf), "%lu", (unsigned long)cycle[i]);
-                safe_write(STDERR_FILENO, buf, len);
-                if (i < cycle_len - 1) safe_write(STDERR_FILENO, " -> ", 4);
-            }
-            safe_write(STDERR_FILENO, "\n", 1);
-            
             // safe stack printing (Release lock before I/O)
-            safe_write(STDERR_FILENO, "\nWait-for Locations:\n", 21);
+            safe_write(STDERR_FILENO, "\nWait-for Locations:\n\n", 23);
             for (size_t i = 0; i < cycle_len; ++i) {
                 void *temp_stack[10];
                 int frames = 0;
@@ -107,7 +147,9 @@ static void *monitor_func(void *arg) {
                     char h[64];
                     int l = snprintf(h, sizeof(h), "Thread %lu stack:\n", (unsigned long)tid);
                     safe_write(STDERR_FILENO, h, l);
-                    backtrace_symbols_fd(temp_stack, frames, STDERR_FILENO);
+                    for (int k = 0; k < frames; k++) {
+                        print_resolved_frame(temp_stack[k]);
+                    }
                     safe_write(STDERR_FILENO, "\n", 1);
                 }
             }
@@ -116,7 +158,7 @@ static void *monitor_func(void *arg) {
             safe_write(2, "Involved waits (tid -> waiting_mutex):\n", 39);
             tracker_print_state(&tracker);
 
-            _exit(1);
+            _exit(1); // no point continuing program, cause its in deadlock
         }
 
         in_deadlock_detection = 0;
@@ -125,15 +167,16 @@ static void *monitor_func(void *arg) {
     return NULL;
 }
 
-
 // Constructor: initialize tracker, resolve functions, and start monitor
 __attribute__((constructor))
 static void deadlock_init(void) {
     if (in_hook) return;
     in_hook = 1;
 
-    safe_write(2, "Deadlock runtime loaded\n", 24);
-
+    if (!getenv("DEADLOCK_QUIET")) {
+        safe_write(2, "Deadlock runtime loaded\n", 24);
+    }
+    
     tracker_init(&tracker);
 
     real_pthread_mutex_lock =
@@ -240,7 +283,7 @@ int __pthread_mutex_unlock(pthread_mutex_t *mutex) {
 /* --- Trylock interception --- */
 
 int pthread_mutex_trylock(pthread_mutex_t *mutex) {
-    // safe Lazy Initialization
+    // lazy Initialization
     if (!real_pthread_mutex_trylock) {
         if (initializing) return 0;
         initializing = 1;
