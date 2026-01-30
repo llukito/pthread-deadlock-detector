@@ -1,86 +1,84 @@
-# Deadlock Detection Library
+# LibDeadlock: Runtime POSIX Deadlock Detector
 
-## Overview
+![Language](https://img.shields.io/badge/language-C%2FC%2B%2B-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Linux-green.svg)
+![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)
 
-This project implements a **dynamic deadlock detection runtime** for multi-threaded C programs using **`pthread` mutexes**.  
-The library intercepts `pthread_mutex_lock`, `pthread_mutex_unlock` and `pthread_mutex_trylock`calls via **`LD_PRELOAD`**, tracks lock ownership, builds a **wait-for graph**, and detects cycles (deadlocks) at runtime.
+**LibDeadlock** is a zero-configuration, runtime analysis tool for C/C++ applications. It detects deadlocks in multi-threaded environments by intercepting `pthread` mutex calls via **`LD_PRELOAD`**, constructing a real-time **Resource Allocation Graph (RAG)**, and identifying cycles using Depth-First Search (DFS).
 
----
-
-## Features
-
-- Intercepts **public** and **internal** pthread mutex functions:
-  - `pthread_mutex_lock`
-  - `pthread_mutex_unlock`
-  - `pthread_mutex_trylock`
-  - `__pthread_mutex_lock`
-  - `__pthread_mutex_unlock`
-  - `__pthread_mutex_trylock`
-
-- Tracks which threads **own** which mutexes and which threads are **waiting**.
-
-- Builds a **wait-for graph** periodically (every 100 ms) and detects cycles.
-
-- Prints:
-  - Deadlock cycles (`ThreadID -> ThreadID -> ...`)
-  - Tracker state showing mutex ownership and waiting relationships.
-
-- Works on any multi-threaded program using pthread mutexes.
+Unlike static analyzers, LibDeadlock runs alongside your application, providing **stack traces** and **mutex ownership chains** the moment a deadlock occurs.
 
 ---
 
-## Technical Overview
+## Key Features
 
-- To run the program, first use `make`,  
-  and then run the command:
+* **Zero-Code Integration:** Uses dynamic linker interposition (`LD_PRELOAD`); no recompilation or source code modification required.
+* **Deep Symbol Hooking:** Intercepts both public (`pthread_mutex_lock`) and internal glibc symbols (`__pthread_mutex_lock`) to catch optimized internal locking mechanisms.
+* **Cycle Detection Engine:** Runs a dedicated monitor thread that periodically builds a **Wait-For Graph** to detect circular dependencies (Deadlocks).
+* **Diagnostic Stack Traces:** Captures and resolves stack frames (`execinfo.h`) to pinpoint exactly *where* in the source code the deadlock occurred.
+* **Async-Signal-Safe Logging:** Uses raw `write()` syscalls instead of buffered `printf` to ensure output integrity during frozen states.
 
-      LD_PRELOAD=./libdeadlock.so ./testn  (where n is a number from 1 to 6) 
-  
-  So, for example, to run first test you would run command,
-  
-      LD_PRELOAD=./libdeadlock.so ./test1
-    
-  > Make sure to edit the file that you want to test for deadlock in the Makefile.
-  > You can add more tests but change Makefile, or edit existing test files.
+---
 
-LD_PRELOAD basically puts my library first before the program runs, so we set up the API first before these well-known libraries (such as `pthread.h`).
+## Usage
 
-Once the library is linked, functions with `__attribute__((constructor))` at the head get executed first. That's where we track and remember real functions (`pthread_mutex_lock`, `pthread_mutex_unlock` and `pthread_mutex_trylock`).
+### 1. Build the Shared Library
+```bash
+make
+# Generates libdeadlock.so
+```
 
-We also initialize our thread, which is a special one and is not tracked, because we use it for parallel monitoring execution. That's why, in the future, we won't use `pthread_mutex_lock` and `pthread_mutex_unlock` but another one, which is `atomic_flag`. Notice that we also use attributes for that pthread: we use a detached type and not joinable, because there is no other thread that will be waiting for it, so it cleans up automatically.
+### 2. Run with Injection
+Inject the library into any existing C/C++ executable:
 
-Then we define functions that already exist in `pthread.h`, but because we linked our library first, the program sets this library in the first container and `pthread.h` in the following one. So once a function tries to search for the implementation of these two functions, it will come across ours first, which will run additional code before calling the actual functions. This additional code is what remembers information about threads and mutexes. Notice that we have both `pthread_mutex_lock` and `__pthread_mutex_lock`, and the same for unlock and trylock, because sometimes what is really called is the one with `__`. This is done by glibc for optimization, so sometimes the real one is called, sometimes the `__` version, so we have both ready in case either of them is called.
+```bash
+LD_PRELOAD=./libdeadlock.so ./your_program
+```
 
-We also have `in_hook` to make sure another thread does not access our functions while another one is inside them. In that case, we just call the main lock and do not let it go further. But in general, we remember which thread is waiting for which mutex and which thread acquires which mutex, and oppositely in unlock, where we track which pthread unlocked a mutex.
+### 3. Example Output
+When a deadlock is detected, the tool interrupts execution and prints the dependency cycle:
 
-Then we take this information to create a wait-for graph. But before that, we basically had two mappings:
+```text
+[DEADLOCK DETECTED] Cycle Found:
+Thread [14023] is waiting for Mutex [0x55a...00] (Owned by Thread [14024])
+Thread [14024] is waiting for Mutex [0x55a...20] (Owned by Thread [14023])
 
-1. Which mutex is locked by which thread  
-2. Which thread is waiting for which mutex
+[STACK TRACE] Thread 14023 blocked at:
+  ./test_program(func_A+0x14) [0x55...]
+  ./test_program(main+0x2a) [0x55...]
+```
 
-We could, of course, use a generic map for this, but it would only make it more complex, so I decided to make two arrays, where access will be O(n), which is still practical for ~300 or more threads. If you want to make it scalable, it is advised to switch to a map.
+---
 
-Also, when we used pthread for our monitoring function, we used busy waiting in the `spinlock_acq` function, which waits until it takes the lock. This is still fine for our implementation, but again, if you want to make it scalable, switch to condition wait and then signal (unless you plan to add those functions into monitoring).
+## Technical Architecture
 
-We also use `write` instead of `printf`, because it is unbuffered and makes log prints more accurate.
+### 1. Symbol Interposition (The "Hook")
+The library utilizes the Linux dynamic linker's `LD_PRELOAD` feature to load before `libc`. Using `dlsym(RTLD_NEXT, ...)` inside a constructor (`__attribute__((constructor))`), we preserve the original function pointers while injecting our tracking logic.
 
-In the graph, we connect threads using this logic (simplified): if T1 is waiting for M1, and M1 is acquired by T2, then `T1 -> T2`. So it is directed. But if, in any case, T2 connects back to T1, we have a deadlock.
+**Intercepted Symbols:**
+* `pthread_mutex_lock` / `unlock` / `trylock`
+* `__pthread_mutex_lock` / `__pthread_mutex_unlock` (Internal glibc variants)
 
-Our monitor function runs tests every 100 ms, builds the graph, checks for cycles with DFS, and then tracks the cycle so we can output it. Of course, the time period at which our monitor runs is customizable as well.
+### 2. The Monitor Thread
+A detached, non-hooked thread is spawned at startup. It sleeps for a definable interval (default: 100ms) and performs the following:
+1.  **Snapshot:** Safely pauses hooks using a global spinlock.
+2.  **Graph Build:** Constructs a directed graph where Nodes = Threads and Edges = "Waiting For Mutex".
+3.  **Cycle Check:** Runs a generic DFS algorithm. If a back-edge is detected during traversal, a deadlock is confirmed.
 
-In the process, we print which thread has which mutex, these simple logs, and in the end, if a cycle is detected, we output which threads are involved. You can remove additional comments if you want to leave only the final one.
+### 3. Data Structures & Performance
+* **O(N) Lookups:** Thread and Mutex tracking utilizes linear arrays rather than hash maps. For typical concurrency loads (<500 threads), this offers better cache locality and avoids `malloc` overhead during critical sections.
+* **Spinlocks:** Uses `atomic_flag` for low-overhead busy waiting, preventing the detector itself from causing a deadlock or context switch.
 
-# Technical Requirements
+---
 
-## Platform Support
-Linux Only: Uses LD_PRELOAD, ELF-specific headers (<execinfo.h>), and the /proc filesystem. Not compatible with macOS (Mach-O) or Windows (PE).
+## ⚠️ Platform & Limitations
 
-## Stack Tracing
-Depth Limit: 
-To search where exactly that deadlock happened and where are these
-threads stored, we have to access stack frames stored in RAM. We
-capture a maximum of 10 stack frames (this provides a balance between deep debugging context and low runtime memory overhead), which is quite descent, cause many programs don't require more, but again if you want to make it scalable, increase its size. 
+* **OS:** Linux only (Requires ELF binary format and `/proc` filesystem access).
+* **Architecture:** x86_64 recommended.
+* **Stack Depth:** Captures the top 10 stack frames to balance debug context with runtime performance.
+* **Thread Safety:** The detector uses a "reentrancy guard" to ensure that the monitor thread's own internal locking does not trigger the hooks.
 
-# Output
-If deadlock happens, our program tells user about it, it also shows it cycle that was created by specific
-threads with their unique IDs. We show user which mutexes were owned by which threads and which threads were waiting for which mutexes, but what is important, is user to be able to fix the code. SO in the middle we actually show user on which line and in which file was program blocked, and we output that for each thread, so user can examine exactly that part of the code, and debugging becomes easier, so we don't only state the problem, we help our user in solving it out.
+---
+
+## 📄 License
+MIT License. Free for educational and research use.
