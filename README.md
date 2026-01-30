@@ -71,7 +71,7 @@ A detached, non-hooked thread is spawned at startup. It sleeps for a definable i
 
 ---
 
-## ⚠️ Platform & Limitations
+## Platform & Limitations
 
 * **OS:** Linux only (Requires ELF binary format and `/proc` filesystem access).
 * **Architecture:** x86_64 recommended.
@@ -80,5 +80,5 @@ A detached, non-hooked thread is spawned at startup. It sleeps for a definable i
 
 ---
 
-## 📄 License
+## License
 MIT License. Free for educational and research use.
